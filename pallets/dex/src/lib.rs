@@ -33,7 +33,7 @@
 #![allow(clippy::unused_unit)]
 #![allow(clippy::collapsible_if)]
 
-use codec::{Decode, Encode, MaxEncodedLen};
+use codec::{Decode, Encode, MaxEncodedLen,Input,Error as CodeError};
 use frame_support::{pallet_prelude::*, transactional, PalletId};
 use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
@@ -99,10 +99,31 @@ pub enum SwapLimit<Balance> {
 	ExactTarget(Balance, Balance),
 }
 
-struct TPair<A:AssetIdTrait>(A,A);
-impl<A:AssetIdTrait> AssetIdTrait for TPair<A> {
+struct TradingPair<T>(T,T);
+impl<T:Encode> Encode for TradingPair<T> {
+	fn size_hint(&self) -> usize {
+		self.0.size_hint() + self.1.size_hint()
+	}
 
+	fn encode(&self) -> Vec<u8> {
+		let mut tmp0 = self.0.encode();
+		let mut tmp1 = self.1.encode();
+		tmp0.append(&mut tmp1);
+		tmp0
+	}
 }
+
+impl<T: Decode> Decode for TradingPair<T> {
+	fn decode<I: Input>(input: &mut I) -> Result<Self, CodeError> {
+	
+		let l = Decode::decode(input)?;
+		let r = Decode::decode(input)?;
+		Ok(TradingPair(l,r))
+		
+	}
+}
+
+impl<T: Encode> EncodeLike for TradingPair<T> {}
 
 
 pub trait DEXManager<AccountId, CurrencyId, Balance> {
@@ -305,7 +326,7 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn liquidity_pool)]
 	pub type LiquidityPool<T: Config> =
-		StorageMap<_, Twox64Concat, (T::AssetId,T::AssetId), (T::Balance, T::Balance), ValueQuery>;
+		StorageMap<_, Twox64Concat, TradingPair<T::AssetId>, (T::Balance, T::Balance), ValueQuery>;
 
 	/// Status for TradingPair.
 	///
@@ -796,12 +817,12 @@ pub mod pallet {
 			}
 		}
 
-		fn get_pair(currency_id_a: T::AssetId, currency_id_b: T::AssetId) -> TPair<T::AssetId>
+		fn get_pair(currency_id_a: T::AssetId, currency_id_b: T::AssetId) -> TradingPair<T::AssetId>
 		{
 			if currency_id_a < currency_id_b {
-				TPair(currency_id_a, currency_id_b)
+				TradingPair(currency_id_a, currency_id_b)
 			} else {
-				TPair(currency_id_b, currency_id_a)
+				TradingPair(currency_id_b, currency_id_a)
 			}
 		}
 
