@@ -143,7 +143,8 @@ use codec::HasCompact;
 use scale_info::TypeInfo;
 use sp_runtime::{
 	traits::{
-		AtLeast32BitUnsigned, Bounded, CheckedAdd,CheckedShl,CheckedShr, CheckedSub, Saturating, StaticLookup, Zero,
+		AtLeast32BitUnsigned, Bounded, CheckedAdd, CheckedShl, CheckedShr, CheckedSub, Saturating,
+		StaticLookup, Zero,
 	},
 	ArithmeticError, TokenError,
 };
@@ -160,11 +161,10 @@ use frame_support::{
 	},
 };
 use frame_system::Config as SystemConfig;
-use pallet_balances::{BalanceTrait,AssetIdTrait};
+use pallet_balances::{AssetIdTrait, BalanceTrait};
 
 pub use pallet::*;
 pub use weights::WeightInfo;
-
 
 #[frame_support::pallet]
 pub mod pallet {

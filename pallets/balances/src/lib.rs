@@ -162,7 +162,7 @@ mod tests_reentrancy;
 pub mod weights;
 
 pub use self::imbalances::{NegativeImbalance, PositiveImbalance};
-use codec::{Codec, Decode, Encode, HasCompact,MaxEncodedLen};
+use codec::{Codec, Decode, Encode, HasCompact, MaxEncodedLen};
 #[cfg(feature = "std")]
 use frame_support::traits::GenesisBuild;
 use frame_support::{
@@ -175,76 +175,86 @@ use frame_support::{
 		Get, Imbalance, LockIdentifier, LockableCurrency, NamedReservableCurrency, OnUnbalanced,
 		ReservableCurrency, SignedImbalance, StoredMap, TryDrop, WithdrawReasons,
 	},
-	WeakBoundedVec,
- Parameter,
+	Parameter, WeakBoundedVec,
 };
 use frame_system as system;
 use scale_info::TypeInfo;
 use sp_runtime::{
 	traits::{
-		AtLeast32BitUnsigned, Bounded, CheckedAdd, CheckedSub,CheckedShl,CheckedShr,Member, MaybeSerializeDeserialize,
-		Saturating, StaticLookup, Zero,
+		AtLeast32BitUnsigned, Bounded, CheckedAdd, CheckedShl, CheckedShr, CheckedSub,
+		MaybeSerializeDeserialize, Member, Saturating, StaticLookup, Zero,
 	},
-	ArithmeticError, DispatchError, RuntimeDebug,
-	FixedPointOperand,FixedPointNumber
+	ArithmeticError, DispatchError, FixedPointNumber, FixedPointOperand, RuntimeDebug,
 };
 use sp_std::{cmp, fmt::Debug, mem, ops::BitOr, prelude::*, result};
 pub use weights::WeightInfo;
 //use sp_arithmetic::fixed_point::{};
 
-pub trait BalanceTrait: Parameter
-+ Member
-+ AtLeast32BitUnsigned
-+ Codec
-+ Default
-+ Copy
-+ MaybeSerializeDeserialize
-+ Debug
-+ MaxEncodedLen
-+ FixedPointOperand
-+ TypeInfo {}
-
-impl <T:Parameter
-+ Member
-+ AtLeast32BitUnsigned
-+ Codec
-+ Default
-+ Copy
-+ MaybeSerializeDeserialize
-+ Debug
-+ MaxEncodedLen
-+ FixedPointOperand
-+ TypeInfo> BalanceTrait for T {}
-
-pub trait AssetIdTrait: Member
-+ Parameter
-+ Default
-+ Copy
-+ HasCompact
-+ MaybeSerializeDeserialize
-+ MaxEncodedLen
-+ TypeInfo
-+ CheckedAdd
-+ CheckedShl
-+ CheckedShr
-+ CheckedSub
-+ PartialOrd {
+pub trait BalanceTrait:
+	Parameter
+	+ Member
+	+ AtLeast32BitUnsigned
+	+ Codec
+	+ Default
+	+ Copy
+	+ MaybeSerializeDeserialize
+	+ Debug
+	+ MaxEncodedLen
+	+ FixedPointOperand
+	+ TypeInfo
+{
 }
 
-impl<T: Member
-+ Parameter
-+ Default
-+ Copy
-+ HasCompact
-+ MaybeSerializeDeserialize
-+ MaxEncodedLen
-+ TypeInfo
-+ CheckedAdd
-+ CheckedShl
-+ CheckedShr
-+ CheckedSub
-+ PartialOrd> AssetIdTrait for T {}
+impl<
+		T: Parameter
+			+ Member
+			+ AtLeast32BitUnsigned
+			+ Codec
+			+ Default
+			+ Copy
+			+ MaybeSerializeDeserialize
+			+ Debug
+			+ MaxEncodedLen
+			+ FixedPointOperand
+			+ TypeInfo,
+	> BalanceTrait for T
+{
+}
 
+pub trait AssetIdTrait:
+	Member
+	+ Parameter
+	+ Default
+	+ Copy
+	+ HasCompact
+	+ MaybeSerializeDeserialize
+	+ MaxEncodedLen
+	+ TypeInfo
+	+ CheckedAdd
+	+ CheckedShl
+	+ CheckedShr
+	+ CheckedSub
+	+ PartialOrd
+{
+}
+
+impl<
+		T: Member
+			+ Parameter
+			+ Default
+			+ Copy
+			+ HasCompact
+			+ MaybeSerializeDeserialize
+			+ MaxEncodedLen
+			+ TypeInfo
+			+ CheckedAdd
+			+ CheckedShl
+			+ CheckedShr
+			+ CheckedSub
+			+ PartialOrd,
+	> AssetIdTrait for T
+{
+}
 
 pub use pallet::*;
 
