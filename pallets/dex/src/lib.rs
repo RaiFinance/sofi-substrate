@@ -39,6 +39,8 @@ use frame_system::pallet_prelude::*;
 use scale_info::TypeInfo;
 
 use codec::EncodeLike;
+#[cfg(feature = "std")]
+use serde::{Deserialize, Serialize};
 use sp_runtime::{
 	traits::{AccountIdConversion, One, Zero},
 	ArithmeticError, DispatchError, DispatchResult, FixedPointNumber, FixedU128, RuntimeDebug,
@@ -100,7 +102,18 @@ pub enum SwapLimit<Balance> {
 }
 
 #[derive(RuntimeDebug, Clone, PartialEq, TypeInfo)]
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub struct TradingPair<T>(T, T);
+impl<T: PartialOrd + Copy> TradingPair<T> {
+	fn adjust(&self) -> Self {
+		if self.0 > self.1 {
+			Self(self.1, self.0)
+		} else {
+			Self(self.0, self.1)
+		}
+	}
+}
+
 impl<T: Encode> Encode for TradingPair<T> {
 	fn size_hint(&self) -> usize {
 		self.0.size_hint() + self.1.size_hint()
@@ -374,69 +387,73 @@ pub mod pallet {
 		ValueQuery,
 	>;
 
-	// #[pallet::genesis_config]
-	// pub struct GenesisConfig<T: Config> {
-	// 	pub initial_listing_trading_pairs: Vec<(T::AssetId, (T::Balance, T::Balance), (T::Balance,
-	// T::Balance), T::BlockNumber)>, 	pub initial_enabled_trading_pairs: Vec<T::AssetId>,
-	// 	pub initial_added_liquidity_pools: Vec<(T::AccountId, Vec<(T::AssetId, (T::Balance,
-	// T::Balance))>)>, }
+	#[pallet::genesis_config]
+	pub struct GenesisConfig<T: Config> {
+		pub initial_listing_trading_pairs: Vec<(
+			TradingPair<T::AssetId>,
+			(T::Balance, T::Balance),
+			(T::Balance, T::Balance),
+			T::BlockNumber,
+		)>,
+		pub initial_enabled_trading_pairs: Vec<TradingPair<T::AssetId>>,
+		pub initial_added_liquidity_pools:
+			Vec<(T::AccountId, Vec<(TradingPair<T::AssetId>, (T::Balance, T::Balance))>)>,
+	}
 
-	// #[cfg(feature = "std")]
-	// impl<T: Config> Default for GenesisConfig<T> {
-	// 	fn default() -> Self {
-	// 		GenesisConfig {
-	// 			initial_listing_trading_pairs: vec![],
-	// 			initial_enabled_trading_pairs: vec![],
-	// 			initial_added_liquidity_pools: vec![],
-	// 		}
-	// 	}
-	// }
+	#[cfg(feature = "std")]
+	impl<T: Config> Default for GenesisConfig<T> {
+		fn default() -> Self {
+			GenesisConfig {
+				initial_listing_trading_pairs: vec![],
+				initial_enabled_trading_pairs: vec![],
+				initial_added_liquidity_pools: vec![],
+			}
+		}
+	}
 
-	// #[pallet::genesis_build]
-	// impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
-	// 	fn build(&self) {
-	// 		self.initial_listing_trading_pairs.iter().for_each(
-	// 			|(trading_pair, min_contribution, target_provision, not_before)| {
-	// 				TradingPairStatuses::<T>::insert(
-	// 					trading_pair,
-	// 					TradingPairStatus::Provisioning(ProvisioningParameters {
-	// 						min_contribution: *min_contribution,
-	// 						target_provision: *target_provision,
-	// 						accumulated_provision: Default::default(),
-	// 						not_before: *not_before,
-	// 					}),
-	// 				);
-	// 			},
-	// 		);
+	#[pallet::genesis_build]
+	impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
+		fn build(&self) {
+			self.initial_listing_trading_pairs.iter().for_each(
+				|(trading_pair, min_contribution, target_provision, not_before)| {
+					TradingPairStatuses::<T>::insert(
+						trading_pair,
+						TradingPairStatus::Provisioning(ProvisioningParameters {
+							min_contribution: *min_contribution,
+							target_provision: *target_provision,
+							accumulated_provision: Default::default(),
+							not_before: *not_before,
+						}),
+					);
+				},
+			);
 
-	// 		self.initial_enabled_trading_pairs.iter().for_each(|trading_pair| {
-	// 			TradingPairStatuses::<T>::insert(trading_pair, TradingPairStatus::<_, _>::Enabled);
-	// 		});
+			self.initial_enabled_trading_pairs.iter().for_each(|trading_pair| {
+				TradingPairStatuses::<T>::insert(trading_pair, TradingPairStatus::<_, _>::Enabled);
+			});
 
-	// 		self.initial_added_liquidity_pools
-	// 			.iter()
-	// 			.for_each(|(who, trading_pairs_data)| {
-	// 				trading_pairs_data
-	// 					.iter()
-	// 					.for_each(|(trading_pair, (deposit_amount_0, deposit_amount_1))| {
-	// 						let result = match <Pallet<T>>::trading_pair_statuses(trading_pair) {
-	// 							TradingPairStatus::<_, _>::Enabled => <Pallet<T>>::do_add_liquidity(
-	// 								who,
-	// 								trading_pair.first(),
-	// 								trading_pair.second(),
-	// 								*deposit_amount_0,
-	// 								*deposit_amount_1,
-	// 								Default::default(),
-	// 								false,
-	// 							),
-	// 							_ => Err(Error::<T>::MustBeEnabled.into()),
-	// 						};
+			self.initial_added_liquidity_pools.iter().for_each(|(who, trading_pairs_data)| {
+				trading_pairs_data.iter().for_each(
+					|(trading_pair, (deposit_amount_0, deposit_amount_1))| {
+						let result = match <Pallet<T>>::trading_pair_statuses(trading_pair) {
+							TradingPairStatus::<_, _>::Enabled => <Pallet<T>>::do_add_liquidity(
+								who,
+								trading_pair.0,
+								trading_pair.1,
+								*deposit_amount_0,
+								*deposit_amount_1,
+								Default::default(),
+								false,
+							),
+							_ => Err(Error::<T>::MustBeEnabled.into()),
+						};
 
-	// 						assert!(result.is_ok(), "genesis add lidquidity pool failed.");
-	// 					});
-	// 			});
-	// 	}
-	// }
+						assert!(result.is_ok(), "genesis add lidquidity pool failed.");
+					},
+				);
+			});
+		}
+	}
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]

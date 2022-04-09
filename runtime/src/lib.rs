@@ -7,7 +7,6 @@
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
 use frame_support::PalletId;
-use frame_system::EnsureSigned;
 use pallet_grandpa::{
 	fg_primitives, AuthorityId as GrandpaId, AuthorityList as GrandpaAuthorityList,
 };
@@ -24,6 +23,8 @@ use sp_std::prelude::*;
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
+use frame_system::EnsureSigned;
+
 
 // A few exports that help ease life for downstream crates.
 pub use frame_support::{
@@ -300,8 +301,8 @@ parameter_types! {
 impl pallet_portfolio::Config for Runtime {
 	type Event = Event;
 	type PalletId = PortofioPalletId;
-	type Currency = Assets;
 	type NativeCurrency = Balances;
+	type DexManager = Dex;
 }
 
 parameter_types! {
