@@ -16,6 +16,7 @@ mod benchmarking;
 pub mod pallet {
 	use frame_support::{
 		pallet_prelude::*,
+		transactional,
 		traits::{
 			fungible::Transfer as NativeTransfer,
 			tokens::fungibles::{self, Create, Mutate, Transfer},
@@ -27,7 +28,8 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 	use pallet_dex::{DEXManager, SwapLimit};
 	use sp_runtime::traits::{AccountIdConversion, One, Saturating, Zero};
-	use sp_std::{vec, vec::Vec};
+	use sp_std::vec::Vec;
+	use sp_std::vec;
 
 	// type T::AssetId = <<T as Config>::Currency as fungibles::Inspect<
 	// 	<T as frame_system::Config>::AccountId,
@@ -150,7 +152,7 @@ pub mod pallet {
 			paths: Vec<Vec<T::AssetId>>,
 		) -> DispatchResult {
 			let _ = ensure_signed(origin)?;
-			SwapPaths::<T>::insert(port_id, paths);
+			SwapPaths::<T>::insert(port_id,paths);
 			Ok(())
 		}
 
@@ -226,22 +228,21 @@ pub mod pallet {
 				}
 				let exchange_amount = amount.saturating_mul(rate[i].into());
 
-				let best_path = {
+
+				let best_path = 
+				{
 					let saved_path = Self::swap_paths(port_id).unwrap_or_default();
 					if !saved_path.is_empty() {
 						T::DexManager::get_best_price_swap_path(
-							ids[i],
-							dst_id,
-							SwapLimit::ExactSupply(exchange_amount, T::Balance::zero()),
-							saved_path,
-						)
-						.unwrap_or_default()
+							ids[i],dst_id,SwapLimit::ExactSupply(exchange_amount, T::Balance::zero()),
+							saved_path
+						).unwrap_or_default()
 					} else {
-						vec![ids[i], dst_id]
+						vec!(ids[i], dst_id)
 					}
 				};
 
-				ensure!(!best_path.is_empty(), Error::<T>::NotHasPath);
+				ensure!(!best_path.is_empty(),Error::<T>::NotHasPath);
 
 				let (_, acture_out) = T::DexManager::swap_with_specific_path(
 					&Self::account_id(),
