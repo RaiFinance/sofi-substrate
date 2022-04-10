@@ -17,7 +17,7 @@ pub mod pallet {
 	use frame_support::{
 		pallet_prelude::*,
 		traits::{
-			fungible::{Transfer as NativeTransfer},
+			fungible::Transfer as NativeTransfer,
 			tokens::fungibles::{self, Create, Mutate, Transfer},
 			Currency,
 		},
@@ -27,7 +27,7 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 	use pallet_dex::{DEXManager, SwapLimit};
 	use sp_runtime::traits::{AccountIdConversion, One, Saturating, Zero};
-	use sp_std::vec::Vec;
+	use sp_std::{vec, vec::Vec};
 
 	// type T::AssetId = <<T as Config>::Currency as fungibles::Inspect<
 	// 	<T as frame_system::Config>::AccountId,
@@ -74,6 +74,10 @@ pub mod pallet {
 	#[pallet::getter(fn owners)]
 	pub type Owners<T: Config> = StorageMap<_, Twox64Concat, T::AssetId, T::AccountId>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn swap_paths)]
+	pub type SwapPaths<T: Config> = StorageMap<_, Twox64Concat, T::AssetId, Vec<Vec<T::AssetId>>>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -88,6 +92,7 @@ pub mod pallet {
 		NotEquel,
 		NotExistId,
 		NotHasAsset,
+		NotHasPath,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -99,6 +104,7 @@ pub mod pallet {
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		#[pallet::weight(10_000)]
+		#[transactional]
 		pub fn create_portofio(
 			origin: OriginFor<T>,
 			id: T::AssetId,
@@ -137,6 +143,17 @@ pub mod pallet {
 			Ok(())
 		}
 
+		#[pallet::weight(10_000)]
+		pub fn set_swap_path(
+			origin: OriginFor<T>,
+			port_id: T::AssetId,
+			paths: Vec<Vec<T::AssetId>>,
+		) -> DispatchResult {
+			let _ = ensure_signed(origin)?;
+			SwapPaths::<T>::insert(port_id, paths);
+			Ok(())
+		}
+
 		// #[pallet::weight(10_000)]
 		// pub fn create_contract(
 		// 	origin: OriginFor<T>,
@@ -158,11 +175,17 @@ pub mod pallet {
 		// }
 
 		#[pallet::weight(10_000)]
+		#[transactional]
 		pub fn buy(origin: OriginFor<T>, id: T::AssetId, amount: u32) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(Components::<T>::contains_key(id), Error::<T>::NotHasAsset);
 			let owner = Owners::<T>::get(id).ok_or(Error::<T>::NotEquel)?;
-			<T::NativeCurrency as NativeTransfer<T::AccountId>>::transfer(&who, &owner, amount.into(), true)?;
+			<T::NativeCurrency as NativeTransfer<T::AccountId>>::transfer(
+				&who,
+				&owner,
+				amount.into(),
+				true,
+			)?;
 
 			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
 				id,
@@ -175,56 +198,72 @@ pub mod pallet {
 		}
 
 		#[pallet::weight(10_000)]
+		#[transactional]
 		pub fn sell(
 			origin: OriginFor<T>,
-			id: T::AssetId,
+			port_id: T::AssetId,
 			dst_id: T::AssetId,
 			amount: T::Balance,
 		) -> DispatchResult {
 			let who = ensure_signed(origin.clone())?;
 
-			ensure!(Components::<T>::contains_key(id), Error::<T>::NotHasAsset);
+			ensure!(Components::<T>::contains_key(port_id), Error::<T>::NotHasAsset);
 			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
-				id,
+				port_id,
 				&who,
 				&Self::account_id(),
 				amount.into(),
 				false,
 			)?;
 
-			let ids = Components::<T>::get(id);
-			let old_len = ids.len();
+			let ids = Components::<T>::get(port_id);
 			let idx = ids.iter().position(|id| *id == dst_id).ok_or(Error::<T>::NotHasAsset)?;
 
-			let rate = Rates::<T>::get(id);
+			let rate = Rates::<T>::get(port_id);
 			for i in 0..ids.len() {
 				if i == idx {
 					continue
 				}
-				let exchange_amount = amount.saturating_mul(  rate[i].saturating_div(rate[idx]).into());
+				let exchange_amount = amount.saturating_mul(rate[i].into());
+
+				let best_path = {
+					let saved_path = Self::swap_paths(port_id).unwrap_or_default();
+					if !saved_path.is_empty() {
+						T::DexManager::get_best_price_swap_path(
+							ids[i],
+							dst_id,
+							SwapLimit::ExactSupply(exchange_amount, T::Balance::zero()),
+							saved_path,
+						)
+						.unwrap_or_default()
+					} else {
+						vec![ids[i], dst_id]
+					}
+				};
+
+				ensure!(!best_path.is_empty(), Error::<T>::NotHasPath);
 
 				let (_, acture_out) = T::DexManager::swap_with_specific_path(
 					&Self::account_id(),
-					&[ids[i], dst_id],
+					&best_path,
 					SwapLimit::ExactSupply(exchange_amount, T::Balance::zero()),
 				)?;
 
 				<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
-					id,
+					dst_id,
 					&Self::account_id(),
 					&who,
 					acture_out,
 					false,
 				)?;
 			}
-			Ok(())
-		}
-
-		/// An example dispatchable that may throw a custom error.
-		#[pallet::weight(10_000)]
-		pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
-
+			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
+				dst_id,
+				&Self::account_id(),
+				&who,
+				amount.saturating_mul(rate[idx].into()),
+				false,
+			)?;
 			Ok(())
 		}
 	}
