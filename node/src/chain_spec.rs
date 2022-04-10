@@ -1,4 +1,4 @@
-use node_template_runtime::{
+use rai_runtime::{
 	AccountId, AuraConfig, BalancesConfig, GenesisConfig, GrandpaConfig, Signature, SudoConfig,
 	SystemConfig, WASM_BINARY,
 };
@@ -153,5 +153,6 @@ fn testnet_genesis(
 		},
 		transaction_payment: Default::default(),
 		assets: Default::default(),
+		dex: Default::default(),
 	}
 }

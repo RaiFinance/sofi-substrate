@@ -7,6 +7,7 @@
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
 use frame_support::PalletId;
+use frame_system::EnsureSigned;
 use pallet_grandpa::{
 	fg_primitives, AuthorityId as GrandpaId, AuthorityList as GrandpaAuthorityList,
 };
@@ -23,8 +24,6 @@ use sp_std::prelude::*;
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
 use sp_version::RuntimeVersion;
-use frame_system::EnsureSigned;
-
 
 // A few exports that help ease life for downstream crates.
 pub use frame_support::{
@@ -94,15 +93,15 @@ pub mod opaque {
 //   https://docs.substrate.io/v3/runtime/upgrades#runtime-versioning
 #[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
-	spec_name: create_runtime_str!("node-template"),
-	impl_name: create_runtime_str!("node-template"),
+	spec_name: create_runtime_str!("rai-subs"),
+	impl_name: create_runtime_str!("rai-subs"),
 	authoring_version: 1,
 	// The version of the runtime specification. A full node will not attempt to use its native
 	//   runtime in substitute for the on-chain Wasm runtime unless all of `spec_name`,
 	//   `spec_version`, and `authoring_version` are the same between Wasm and native.
 	// This value is set to 100 to notify Polkadot-JS App (https://polkadot.js.org/apps) to use
 	//   the compatible custom types.
-	spec_version: 100,
+	spec_version: 1,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -248,7 +247,7 @@ impl pallet_balances::Config for Runtime {
 	/// The ubiquitous event type.
 	type Event = Event;
 	type DustRemoval = ();
-	type ExistentialDeposit = ConstU128<500>;
+	type ExistentialDeposit = ConstU128<1>;
 	type AccountStore = System;
 	type WeightInfo = pallet_balances::weights::SubstrateWeight<Runtime>;
 }
@@ -279,7 +278,7 @@ parameter_types! {
 
 impl pallet_assets::Config for Runtime {
 	type Event = Event;
-	type Balance = u64;
+	type Balance = u128;
 	type AssetId = u64;
 	type Currency = Balances;
 	type ForceOrigin = EnsureSigned<AccountId>;
@@ -298,10 +297,39 @@ parameter_types! {
 	pub const PortofioPalletId: PalletId = PalletId(*b"portofio");
 }
 
-/// Configure the pallet-template in pallets/template.
 impl pallet_portfolio::Config for Runtime {
 	type Event = Event;
 	type PalletId = PortofioPalletId;
+	type NativeCurrency = Balances;
+	type DexManager = Dex;
+}
+
+parameter_types! {
+	pub const GetExchangeFee: (u32, u32) = (1, 1000);	// 0.1%
+	pub const TradingPathLimit: u32 = 4;
+	pub const DEXPalletId: PalletId = PalletId(*b"rai/dexm");
+	// this value realte to AssetId type
+	pub const AssetIdShift: u32 = 32;
+	// pub EnabledTradingPairs: Vec<TradingPair> = vec![
+	// 	TradingPair::from_currency_ids(AUSD, ACA).unwrap(),
+	// 	TradingPair::from_currency_ids(AUSD, DOT).unwrap(),
+	// 	TradingPair::from_currency_ids(DOT, LDOT).unwrap(),
+	// 	TradingPair::from_currency_ids(AUSD, RENBTC).unwrap(),
+	// 	TradingPair::from_currency_ids(DOT, ACA).unwrap(),
+	// ];
+}
+
+impl pallet_dex::Config for Runtime {
+	type Event = Event;
+	type GetExchangeFee = GetExchangeFee;
+	type TradingPathLimit = TradingPathLimit;
+	type PalletId = DEXPalletId;
+	//type Erc20InfoMapping = EvmErc20InfoMapping<Runtime>;
+	//type DEXIncentives = Incentives;
+	//type WeightInfo = weights::module_dex::WeightInfo<Runtime>;
+	type ListingOrigin = EnsureRoot<AccountId>;
+	type AssetIdShift = AssetIdShift;
+	//type OnLiquidityPoolUpdated = ();
 }
 
 // Create the runtime by composing the FRAME pallets that were previously configured.
@@ -322,6 +350,7 @@ construct_runtime!(
 		Assets: pallet_assets,
 		// Include the custom logic from the pallet-template in the runtime.
 		Portfolio: pallet_portfolio,
+		Dex: pallet_dex,
 	}
 );
 
