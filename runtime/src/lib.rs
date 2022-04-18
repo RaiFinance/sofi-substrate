@@ -43,6 +43,7 @@ use pallet_transaction_payment::CurrencyAdapter;
 pub use sp_runtime::BuildStorage;
 pub use sp_runtime::{Perbill, Permill};
 
+pub use pallet_dex::TradingPair;
 /// Import the template pallet.
 pub use pallet_portfolio;
 
@@ -101,7 +102,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	//   `spec_version`, and `authoring_version` are the same between Wasm and native.
 	// This value is set to 100 to notify Polkadot-JS App (https://polkadot.js.org/apps) to use
 	//   the compatible custom types.
-	spec_version: 1,
+	spec_version: 8,
 	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
@@ -310,17 +311,13 @@ parameter_types! {
 	pub const DEXPalletId: PalletId = PalletId(*b"rai/dexm");
 	// this value realte to AssetId type
 	pub const AssetIdShift: u32 = 32;
-	// pub EnabledTradingPairs: Vec<TradingPair> = vec![
-	// 	TradingPair::from_currency_ids(AUSD, ACA).unwrap(),
-	// 	TradingPair::from_currency_ids(AUSD, DOT).unwrap(),
-	// 	TradingPair::from_currency_ids(DOT, LDOT).unwrap(),
-	// 	TradingPair::from_currency_ids(AUSD, RENBTC).unwrap(),
-	// 	TradingPair::from_currency_ids(DOT, ACA).unwrap(),
-	// ];
+	pub EnabledTradingPairs: Vec<TradingPair<u64>> = vec![
+	];
 }
 
 impl pallet_dex::Config for Runtime {
 	type Event = Event;
+	type NativeCurrency = Balances;
 	type GetExchangeFee = GetExchangeFee;
 	type TradingPathLimit = TradingPathLimit;
 	type PalletId = DEXPalletId;

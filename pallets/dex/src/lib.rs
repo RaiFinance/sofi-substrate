@@ -48,8 +48,6 @@ use sp_runtime::{
 };
 use sp_std::{prelude::*, vec};
 
-//use support::{DEXIncentives, DEXManager, Erc20InfoMapping, ExchangeRate, Ratio, SwapLimit};
-
 mod mock;
 mod tests;
 pub mod weights;
@@ -104,6 +102,7 @@ pub enum SwapLimit<Balance> {
 #[derive(RuntimeDebug, Clone, PartialEq, TypeInfo)]
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 pub struct TradingPair<T>(T, T);
+
 impl<T: PartialOrd + Copy> TradingPair<T> {
 	fn adjust(&self) -> Self {
 		if self.0 > self.1 {
@@ -111,6 +110,10 @@ impl<T: PartialOrd + Copy> TradingPair<T> {
 		} else {
 			Self(self.0, self.1)
 		}
+	}
+
+	pub fn new(lhs: T, rhs: T) -> Self {
+		Self(lhs, rhs).adjust()
 	}
 }
 
@@ -168,7 +171,6 @@ pub trait DEXManager<AccountId, CurrencyId, Balance> {
 		max_amount_a: Balance,
 		max_amount_b: Balance,
 		min_share_increment: Balance,
-		stake_increment_share: bool,
 	) -> sp_std::result::Result<(Balance, Balance, Balance), DispatchError>;
 
 	fn remove_liquidity(
@@ -189,7 +191,8 @@ pub mod pallet {
 		log,
 		traits::{
 			tokens::fungibles::{self, Balanced, Create, Inspect, Mutate, Transfer, Unbalanced},
-			Currency,
+			Currency as NativeCurrency, ExistenceRequirement,
+			ExistenceRequirement::KeepAlive,
 		},
 		PalletId,
 	};
@@ -198,7 +201,7 @@ pub mod pallet {
 	use sp_runtime::{
 		traits::{
 			AccountIdConversion, CheckedAdd, CheckedDiv, CheckedShl, CheckedShr, CheckedSub, One,
-			Saturating, StaticLookup,
+			Saturating, StaticLookup, UniqueSaturatedFrom,
 		},
 		FixedPointNumber, FixedPointOperand,
 	};
@@ -210,7 +213,7 @@ pub mod pallet {
 	pub trait Config: frame_system::Config + pallet_assets::Config {
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
 
-		//type NativeCurrency: NativeTransfer<Self::AccountId>;
+		type NativeCurrency: NativeCurrency<Self::AccountId>;
 
 		/// Trading fee rate
 		/// The first item of the tuple is the numerator of the fee rate, second
@@ -443,7 +446,7 @@ pub mod pallet {
 								*deposit_amount_0,
 								*deposit_amount_1,
 								Default::default(),
-								false,
+								//false,
 							),
 							_ => Err(Error::<T>::MustBeEnabled.into()),
 						};
@@ -466,6 +469,47 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		#[pallet::weight(100)]
 		#[transactional]
+		pub fn wrap_sofi(origin: OriginFor<T>, amount: u128) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			T::NativeCurrency::transfer(
+				&who,
+				&Self::account_id(),
+				UniqueSaturatedFrom::unique_saturated_from(amount),
+				ExistenceRequirement::KeepAlive,
+			)?;
+
+			pallet_assets::Pallet::<T>::mint_into(
+				T::AssetId::zero(),
+				&who,
+				UniqueSaturatedFrom::unique_saturated_from(amount),
+			)?;
+			Ok(())
+		}
+
+		#[pallet::weight(100)]
+		#[transactional]
+		pub fn unwrap_sofi(origin: OriginFor<T>, amount: u128) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
+				T::AssetId::zero(),
+				&who,
+				&Self::account_id(),
+				UniqueSaturatedFrom::unique_saturated_from(amount),
+				false,
+			)?;
+			T::NativeCurrency::transfer(
+				&Self::account_id(),
+				&who,
+				UniqueSaturatedFrom::unique_saturated_from(amount),
+				ExistenceRequirement::KeepAlive,
+			)?;
+
+			Ok(())
+		}
+
+		#[pallet::weight(100)]
+		#[transactional]
 		pub fn add_liquidity(
 			origin: OriginFor<T>,
 			currency_id_a: T::AssetId,
@@ -473,7 +517,6 @@ pub mod pallet {
 			#[pallet::compact] max_amount_a: T::Balance,
 			#[pallet::compact] max_amount_b: T::Balance,
 			#[pallet::compact] min_share_increment: T::Balance,
-			stake_increment_share: bool,
 		) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			Self::do_add_liquidity(
@@ -483,7 +526,6 @@ pub mod pallet {
 				max_amount_a,
 				max_amount_b,
 				min_share_increment,
-				stake_increment_share,
 			)?;
 			Ok(())
 		}
@@ -797,6 +839,8 @@ pub mod pallet {
 
 			let trading_pair = Self::get_pair(currency_id_a, currency_id_b);
 
+			let dex_id = Self::pair_assetid(currency_id_a, currency_id_b)
+				.ok_or(Error::<T>::InvalidCurrencyId)?;
 			match Self::trading_pair_statuses(trading_pair.clone()) {
 				TradingPairStatus::<_, _>::Disabled => {},
 				TradingPairStatus::<_, _>::Provisioning(provisioning_parameters) => {
@@ -808,6 +852,13 @@ pub mod pallet {
 				},
 				TradingPairStatus::<_, _>::Enabled => return Err(Error::<T>::AlreadyEnabled.into()),
 			}
+
+			<pallet_assets::Pallet<T> as Create<T::AccountId>>::create(
+				dex_id,
+				Self::account_id(),
+				true,
+				T::Balance::one(),
+			)?;
 
 			TradingPairStatuses::<T>::insert(trading_pair.clone(), TradingPairStatus::Enabled);
 			Self::deposit_event(Event::EnableTradingPair { trading_pair });
@@ -848,9 +899,9 @@ pub mod pallet {
 			if x == y {
 				None
 			} else if x < y {
-				Some(x.checked_shl(T::AssetIdShift::get())?.checked_add(&y)?)
+				Some((x + T::AssetId::one()).checked_shl(T::AssetIdShift::get())?.checked_add(&y)?)
 			} else {
-				Some(y.checked_shl(T::AssetIdShift::get())?.checked_add(&x)?)
+				Some((y + T::AssetId::one()).checked_shl(T::AssetIdShift::get())?.checked_add(&x)?)
 			}
 		}
 
@@ -866,7 +917,7 @@ pub mod pallet {
 		}
 
 		fn split_assetid(both_id: T::AssetId) -> Option<(T::AssetId, T::AssetId)> {
-			let x = both_id.checked_shr(T::AssetIdShift::get())?;
+			let x = both_id.checked_shr(T::AssetIdShift::get())?.checked_sub(&T::AssetId::one())?;
 			let tmp = x.checked_shl(T::AssetIdShift::get())?;
 			let y = both_id.checked_sub(&tmp)?;
 			Some((x, y))
@@ -1052,7 +1103,6 @@ pub mod pallet {
 			max_amount_a: T::Balance,
 			max_amount_b: T::Balance,
 			min_share_increment: T::Balance,
-			stake_increment_share: bool,
 		) -> sp_std::result::Result<(T::Balance, T::Balance, T::Balance), DispatchError> {
 			let dex_share_currency_id = Self::pair_assetid(currency_id_a, currency_id_b).unwrap();
 			let trading_pair = Self::get_pair(currency_id_a, currency_id_b);
@@ -1145,9 +1195,9 @@ pub mod pallet {
 				*pool_0 = pool_0.checked_add(&pool_0_increment).ok_or(ArithmeticError::Overflow)?;
 				*pool_1 = pool_1.checked_add(&pool_1_increment).ok_or(ArithmeticError::Overflow)?;
 
-				if stake_increment_share {
-					//T::DEXIncentives::do_deposit_dex_share(who, dex_share_currency_id, share_increment)?;
-				}
+				// if stake_increment_share {
+				// 	T::DEXIncentives::do_deposit_dex_share(who, dex_share_currency_id, share_increment)?;
+				// }
 
 				Self::deposit_event(Event::AddLiquidity {
 					who: who.clone(),
@@ -1624,7 +1674,6 @@ pub mod pallet {
 			max_amount_a: T::Balance,
 			max_amount_b: T::Balance,
 			min_share_increment: T::Balance,
-			stake_increment_share: bool,
 		) -> sp_std::result::Result<(T::Balance, T::Balance, T::Balance), DispatchError> {
 			Self::do_add_liquidity(
 				who,
@@ -1633,7 +1682,6 @@ pub mod pallet {
 				max_amount_a,
 				max_amount_b,
 				min_share_increment,
-				stake_increment_share,
 			)
 		}
 

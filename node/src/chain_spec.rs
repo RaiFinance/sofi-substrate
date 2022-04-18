@@ -1,6 +1,6 @@
 use rai_runtime::{
-	AccountId, AuraConfig, BalancesConfig, GenesisConfig, GrandpaConfig, Signature, SudoConfig,
-	SystemConfig, WASM_BINARY,
+	AccountId, AuraConfig, BalancesConfig, DexConfig, EnabledTradingPairs, GenesisConfig,
+	GrandpaConfig, Signature, SudoConfig, SystemConfig, WASM_BINARY,
 };
 use sc_service::ChainType;
 use sp_consensus_aura::sr25519::AuthorityId as AuraId;
@@ -153,6 +153,10 @@ fn testnet_genesis(
 		},
 		transaction_payment: Default::default(),
 		assets: Default::default(),
-		dex: Default::default(),
+		dex: DexConfig {
+			initial_listing_trading_pairs: vec![],
+			initial_enabled_trading_pairs: EnabledTradingPairs::get(),
+			initial_added_liquidity_pools: vec![],
+		},
 	}
 }

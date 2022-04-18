@@ -224,6 +224,7 @@ impl<
 pub trait AssetIdTrait:
 	Member
 	+ Parameter
+	+ AtLeast32BitUnsigned
 	+ Default
 	+ Copy
 	+ HasCompact
@@ -241,6 +242,7 @@ pub trait AssetIdTrait:
 impl<
 		T: Member
 			+ Parameter
+			+ AtLeast32BitUnsigned
 			+ Default
 			+ Copy
 			+ HasCompact

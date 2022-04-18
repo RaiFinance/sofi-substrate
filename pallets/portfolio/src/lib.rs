@@ -15,31 +15,22 @@ mod benchmarking;
 #[frame_support::pallet]
 pub mod pallet {
 	use frame_support::{
-		pallet_prelude::*,
-		transactional,
+		pallet_prelude::{ValueQuery, *},
 		traits::{
 			fungible::Transfer as NativeTransfer,
-			tokens::fungibles::{self, Create, Mutate, Transfer},
+			tokens::fungibles::{self, Create, Inspect, Mutate, Transfer},
 			Currency,
 		},
-		PalletId,
+		transactional, PalletId,
 	};
 
 	use frame_system::pallet_prelude::*;
 	use pallet_dex::{DEXManager, SwapLimit};
-	use sp_runtime::traits::{AccountIdConversion, One, Saturating, Zero};
-	use sp_std::vec::Vec;
-	use sp_std::vec;
-
-	// type T::AssetId = <<T as Config>::Currency as fungibles::Inspect<
-	// 	<T as frame_system::Config>::AccountId,
-	// >>::AssetId;
-	// type T::Balance = <<T as Config>::Currency as fungibles::Inspect<
-	// 	<T as frame_system::Config>::AccountId,
-	// >>::Balance;
-	// type NativeBalanceOf<T> = <<T as Config>::NativeCurrency as fungible::Inspect<
-	// 	<T as frame_system::Config>::AccountId,
-	// >>::Balance;
+	use sp_runtime::{
+		traits::{AccountIdConversion, One, UniqueSaturatedFrom, UniqueSaturatedInto, Zero},
+		Perbill,
+	};
+	use sp_std::{vec, vec::Vec};
 
 	#[pallet::config]
 	pub trait Config: frame_system::Config + pallet_assets::Config {
@@ -70,15 +61,26 @@ pub mod pallet {
 
 	#[pallet::storage]
 	#[pallet::getter(fn rates)]
-	pub type Rates<T: Config> = StorageMap<_, Twox64Concat, T::AssetId, Vec<u32>, ValueQuery>;
+	pub type Rates<T: Config> = StorageMap<_, Twox64Concat, T::AssetId, Vec<Perbill>, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn owners)]
 	pub type Owners<T: Config> = StorageMap<_, Twox64Concat, T::AssetId, T::AccountId>;
 
 	#[pallet::storage]
-	#[pallet::getter(fn swap_paths)]
-	pub type SwapPaths<T: Config> = StorageMap<_, Twox64Concat, T::AssetId, Vec<Vec<T::AssetId>>>;
+	#[pallet::getter(fn port_user_balances)]
+	pub type PortUserBalances<T: Config> = StorageDoubleMap<
+		_,
+		Twox64Concat,
+		T::AssetId,
+		Twox64Concat,
+		T::AccountId,
+		Vec<T::Balance>,
+		ValueQuery,
+	>;
+
+	#[pallet::storage]
+	pub type SwapPaths<T: Config> = StorageValue<_, Vec<Vec<T::AssetId>>, ValueQuery>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -95,6 +97,8 @@ pub mod pallet {
 		NotExistId,
 		NotHasAsset,
 		NotHasPath,
+		NotHasEnoughAsset,
+		NotEqueOne,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -109,7 +113,7 @@ pub mod pallet {
 		#[transactional]
 		pub fn create_portofio(
 			origin: OriginFor<T>,
-			id: T::AssetId,
+			port_id: T::AssetId,
 			components: Vec<T::AssetId>,
 			exchange_rates: Vec<u32>,
 			mint_amount: T::Balance,
@@ -121,38 +125,32 @@ pub mod pallet {
 			}
 			let admin = ensure_signed(origin)?;
 
+			let sum: u32 = exchange_rates.iter().sum();
+			ensure!(sum == 100, Error::<T>::NotEquel);
+
+			let exchange_rates: Vec<_> =
+				exchange_rates.into_iter().map(|i| Perbill::from_percent(i)).collect();
+
 			<pallet_assets::Pallet<T> as Create<T::AccountId>>::create(
-				id,
+				port_id,
 				admin.clone(),
 				true,
 				T::Balance::one(),
 			)?;
 
-			pallet_assets::Pallet::<T>::mint_into(id, &Self::account_id(), mint_amount)?;
+			pallet_assets::Pallet::<T>::mint_into(port_id, &Self::account_id(), mint_amount)?;
 
-			for i in 0..components.len() {
-				pallet_assets::Pallet::<T>::mint_into(
-					components[i],
-					&Self::account_id(),
-					mint_amount.saturating_mul(exchange_rates[i].into()),
-				)?;
-			}
-
-			Components::<T>::insert(id, components);
-			Rates::<T>::insert(id, exchange_rates);
-			Owners::<T>::insert(id, admin);
+			Components::<T>::insert(port_id, components);
+			Rates::<T>::insert(port_id, exchange_rates);
+			Owners::<T>::insert(port_id, admin);
 
 			Ok(())
 		}
 
 		#[pallet::weight(10_000)]
-		pub fn set_swap_path(
-			origin: OriginFor<T>,
-			port_id: T::AssetId,
-			paths: Vec<Vec<T::AssetId>>,
-		) -> DispatchResult {
+		pub fn set_swap_path(origin: OriginFor<T>, paths: Vec<Vec<T::AssetId>>) -> DispatchResult {
 			let _ = ensure_signed(origin)?;
-			SwapPaths::<T>::insert(port_id,paths);
+			SwapPaths::<T>::put(paths);
 			Ok(())
 		}
 
@@ -178,24 +176,62 @@ pub mod pallet {
 
 		#[pallet::weight(10_000)]
 		#[transactional]
-		pub fn buy(origin: OriginFor<T>, id: T::AssetId, amount: u32) -> DispatchResult {
+		pub fn buy(origin: OriginFor<T>, port_id: T::AssetId, amount: u128) -> DispatchResult {
 			let who = ensure_signed(origin)?;
-			ensure!(Components::<T>::contains_key(id), Error::<T>::NotHasAsset);
-			let owner = Owners::<T>::get(id).ok_or(Error::<T>::NotEquel)?;
-			<T::NativeCurrency as NativeTransfer<T::AccountId>>::transfer(
+			ensure!(Components::<T>::contains_key(port_id), Error::<T>::NotHasAsset);
+			let owner = Owners::<T>::get(port_id).ok_or(Error::<T>::NotEquel)?;
+
+			let ids = Components::<T>::get(port_id);
+			let rates = Rates::<T>::get(port_id);
+
+			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
+				0u32.into(),
 				&who,
-				&owner,
-				amount.into(),
-				true,
+				&Self::account_id(),
+				UniqueSaturatedFrom::unique_saturated_from(amount),
+				false,
 			)?;
 
 			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
-				id,
+				port_id,
 				&Self::account_id(),
 				&who,
-				amount.into(),
+				UniqueSaturatedFrom::unique_saturated_from(amount),
 				false,
 			)?;
+
+			let mut balances = Vec::new();
+			for i in 0..ids.len() {
+				let balance = rates[i] * amount;
+				let best_path = {
+					let saved_path = SwapPaths::<T>::get();
+					if !saved_path.is_empty() {
+						T::DexManager::get_best_price_swap_path(
+							0u32.into(),
+							ids[i],
+							SwapLimit::ExactSupply(
+								UniqueSaturatedFrom::unique_saturated_from(balance),
+								T::Balance::zero(),
+							),
+							saved_path,
+						)
+						.unwrap_or_default()
+					} else {
+						vec![0u32.into(), ids[i]]
+					}
+				};
+
+				let (_, acture_out) = T::DexManager::swap_with_specific_path(
+					&Self::account_id(),
+					&best_path,
+					SwapLimit::ExactSupply(
+						UniqueSaturatedFrom::unique_saturated_from(balance),
+						T::Balance::zero(),
+					),
+				)?;
+				balances.push(acture_out);
+			}
+			PortUserBalances::<T>::insert(port_id, who, balances);
 			Ok(())
 		}
 
@@ -205,66 +241,72 @@ pub mod pallet {
 			origin: OriginFor<T>,
 			port_id: T::AssetId,
 			dst_id: T::AssetId,
-			amount: T::Balance,
+			amount: u128,
 		) -> DispatchResult {
 			let who = ensure_signed(origin.clone())?;
-
 			ensure!(Components::<T>::contains_key(port_id), Error::<T>::NotHasAsset);
+
+			let ids = Components::<T>::get(port_id);
+			//let idx = ids.iter().position(|id| *id == dst_id).ok_or(Error::<T>::NotHasAsset)?;
+			let amount: T::Balance = UniqueSaturatedFrom::unique_saturated_from(amount);
+			let whole = <pallet_assets::Pallet<T> as Inspect<T::AccountId>>::balance(port_id, &who);
+			ensure!(whole >= amount, Error::<T>::NotHasEnoughAsset);
+
 			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
 				port_id,
 				&who,
 				&Self::account_id(),
-				amount.into(),
+				amount,
 				false,
 			)?;
 
-			let ids = Components::<T>::get(port_id);
-			let idx = ids.iter().position(|id| *id == dst_id).ok_or(Error::<T>::NotHasAsset)?;
+			let get_balance_rate = whole / amount;
+			let get_balance_rate =
+				UniqueSaturatedInto::<u64>::unique_saturated_into(get_balance_rate);
+			let perbill_rate = Perbill::from_rational(1u64, get_balance_rate);
 
-			let rate = Rates::<T>::get(port_id);
+			let mut balances = PortUserBalances::<T>::get(port_id, who.clone());
+			//let rate = Rates::<T>::get(port_id);
+			let mut total = T::Balance::zero();
 			for i in 0..ids.len() {
-				if i == idx {
+				let exchange_amount = perbill_rate * balances[i];
+				balances[i] -= exchange_amount;
+				if ids[i] == dst_id {
+					total += exchange_amount;
 					continue
+				} else {
+					let best_path = {
+						let saved_path = SwapPaths::<T>::get();
+						if !saved_path.is_empty() {
+							T::DexManager::get_best_price_swap_path(
+								ids[i],
+								dst_id,
+								SwapLimit::ExactSupply(exchange_amount, T::Balance::zero()),
+								saved_path,
+							)
+							.unwrap_or_default()
+						} else {
+							vec![ids[i], dst_id]
+						}
+					};
+
+					ensure!(!best_path.is_empty(), Error::<T>::NotHasPath);
+					let (_, acture_out) = T::DexManager::swap_with_specific_path(
+						&Self::account_id(),
+						&best_path,
+						SwapLimit::ExactSupply(exchange_amount, T::Balance::zero()),
+					)?;
+					total += acture_out;
 				}
-				let exchange_amount = amount.saturating_mul(rate[i].into());
-
-
-				let best_path = 
-				{
-					let saved_path = Self::swap_paths(port_id).unwrap_or_default();
-					if !saved_path.is_empty() {
-						T::DexManager::get_best_price_swap_path(
-							ids[i],dst_id,SwapLimit::ExactSupply(exchange_amount, T::Balance::zero()),
-							saved_path
-						).unwrap_or_default()
-					} else {
-						vec!(ids[i], dst_id)
-					}
-				};
-
-				ensure!(!best_path.is_empty(),Error::<T>::NotHasPath);
-
-				let (_, acture_out) = T::DexManager::swap_with_specific_path(
-					&Self::account_id(),
-					&best_path,
-					SwapLimit::ExactSupply(exchange_amount, T::Balance::zero()),
-				)?;
-
-				<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
-					dst_id,
-					&Self::account_id(),
-					&who,
-					acture_out,
-					false,
-				)?;
 			}
 			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
 				dst_id,
 				&Self::account_id(),
 				&who,
-				amount.saturating_mul(rate[idx].into()),
+				total,
 				false,
 			)?;
+			PortUserBalances::<T>::insert(port_id, who, balances);
 			Ok(())
 		}
 	}
