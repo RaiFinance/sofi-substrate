@@ -68,16 +68,8 @@ pub mod pallet {
 	pub type Owners<T: Config> = StorageMap<_, Twox64Concat, T::AssetId, T::AccountId>;
 
 	#[pallet::storage]
-	#[pallet::getter(fn port_user_balances)]
-	pub type PortUserBalances<T: Config> = StorageDoubleMap<
-		_,
-		Twox64Concat,
-		T::AssetId,
-		Twox64Concat,
-		T::AccountId,
-		Vec<T::Balance>,
-		ValueQuery,
-	>;
+	#[pallet::getter(fn port_total_balances)]
+	pub type PortTotalBalances<T: Config> = StorageValue<_, Vec<T::Balance>, ValueQuery>;
 
 	#[pallet::storage]
 	pub type SwapPaths<T: Config> = StorageValue<_, Vec<Vec<T::AssetId>>, ValueQuery>;
@@ -87,7 +79,8 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		/// Event documentation should end with an array that provides descriptive names for event
 		/// parameters. [something, who]
-		SomethingStored(u32, T::AccountId),
+		PortofioCreated(T::AssetId),
+		PortofioBuy(T::Balance),
 	}
 
 	// Errors inform users that something went wrong.
@@ -99,6 +92,8 @@ pub mod pallet {
 		NotHasPath,
 		NotHasEnoughAsset,
 		NotEqueOne,
+		NotOwner,
+		NotChange,
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -116,9 +111,9 @@ pub mod pallet {
 			port_id: T::AssetId,
 			components: Vec<T::AssetId>,
 			exchange_rates: Vec<u32>,
-			mint_amount: T::Balance,
 		) -> DispatchResult {
-			ensure!(components.len() == exchange_rates.len(), Error::<T>::NotEquel);
+			let len = components.len();
+			ensure!(len == exchange_rates.len(), Error::<T>::NotEquel);
 			for cid in &components {
 				//ensure!(pallet_assets::Pallet::Asset::<T>::contains_key(cid),
 				// Error::<T>::NotExistId);
@@ -131,19 +126,22 @@ pub mod pallet {
 			let exchange_rates: Vec<_> =
 				exchange_rates.into_iter().map(|i| Perbill::from_percent(i)).collect();
 
+			let pallet_account = Self::account_id();
 			<pallet_assets::Pallet<T> as Create<T::AccountId>>::create(
 				port_id,
-				admin.clone(),
+				pallet_account,
 				true,
 				T::Balance::one(),
 			)?;
 
-			pallet_assets::Pallet::<T>::mint_into(port_id, &Self::account_id(), mint_amount)?;
+			//pallet_assets::Pallet::<T>::mint_into(port_id, &Self::account_id(), 1u32.into())?;
 
 			Components::<T>::insert(port_id, components);
 			Rates::<T>::insert(port_id, exchange_rates);
 			Owners::<T>::insert(port_id, admin);
-
+			let zero = T::Balance::zero();
+			PortTotalBalances::<T>::put(vec![zero; len]);
+			Self::deposit_event(Event::PortofioCreated(port_id));
 			Ok(())
 		}
 
@@ -179,30 +177,116 @@ pub mod pallet {
 		pub fn buy(origin: OriginFor<T>, port_id: T::AssetId, amount: u128) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			ensure!(Components::<T>::contains_key(port_id), Error::<T>::NotHasAsset);
-			let owner = Owners::<T>::get(port_id).ok_or(Error::<T>::NotEquel)?;
+			//let owner = Owners::<T>::get(port_id).ok_or(Error::<T>::NotEquel)?;
 
 			let ids = Components::<T>::get(port_id);
 			let rates = Rates::<T>::get(port_id);
+			let amount: T::Balance = UniqueSaturatedFrom::unique_saturated_from(amount);
+			Self::deposit_event(Event::PortofioBuy(amount));
 
 			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
 				0u32.into(),
 				&who,
 				&Self::account_id(),
-				UniqueSaturatedFrom::unique_saturated_from(amount),
+				amount.clone(),
 				false,
 			)?;
 
+			pallet_assets::Pallet::<T>::mint_into(port_id, &who, amount.clone())?;
+
+			let balances = Self::do_buy(amount, ids, rates)?;
+			let mut saved_balances = PortTotalBalances::<T>::get();
+
+			for i in 0..balances.len() {
+				saved_balances[i] += balances[i];
+			}
+			PortTotalBalances::<T>::put(saved_balances);
+			Ok(())
+		}
+
+		#[pallet::weight(10_000)]
+		#[transactional]
+		pub fn sell(
+			origin: OriginFor<T>,
+			port_id: T::AssetId,
+			dst_id: T::AssetId,
+			amount: u128,
+		) -> DispatchResult {
+			let who = ensure_signed(origin.clone())?;
+			ensure!(Components::<T>::contains_key(port_id), Error::<T>::NotHasAsset);
+
+			let ids = Components::<T>::get(port_id);
+			let amount: T::Balance = UniqueSaturatedFrom::unique_saturated_from(amount);
+			let whole =
+				<pallet_assets::Pallet<T> as Inspect<T::AccountId>>::total_issuance(port_id);
+			ensure!(whole >= amount, Error::<T>::NotHasEnoughAsset);
+
+			pallet_assets::Pallet::<T>::burn_from(port_id, &who, amount)?;
+
+			let perbill_rate = Perbill::from_rational(amount, whole);
+
+			let mut saved_balances = PortTotalBalances::<T>::get();
+			//let rate = Rates::<T>::get(port_id);
+			let total = Self::do_sell(&mut saved_balances, ids, perbill_rate, dst_id)?;
 			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
-				port_id,
+				dst_id,
 				&Self::account_id(),
 				&who,
-				UniqueSaturatedFrom::unique_saturated_from(amount),
+				total,
 				false,
 			)?;
+			PortTotalBalances::<T>::put(saved_balances);
+			Ok(())
+		}
 
+		#[pallet::weight(10_000)]
+		#[transactional]
+		pub fn change_rate(
+			origin: OriginFor<T>,
+			port_id: T::AssetId,
+			new_rates: Vec<u32>,
+		) -> DispatchResult {
+			let owner = ensure_signed(origin)?;
+			ensure!(Owners::<T>::get(port_id) == Some(owner), Error::<T>::NotOwner);
+
+			let sum: u32 = new_rates.iter().sum();
+			ensure!(sum == 100, Error::<T>::NotEquel);
+
+			let new_rates: Vec<_> =
+				new_rates.into_iter().map(|i| Perbill::from_percent(i)).collect();
+			let old_rates = Rates::<T>::get(port_id);
+			ensure!(new_rates.len() == old_rates.len(), Error::<T>::NotEquel);
+			ensure!(new_rates != old_rates, Error::<T>::NotChange);
+
+			let mut saved_balances = PortTotalBalances::<T>::get();
+			let ids = Components::<T>::get(port_id);
+			let total = Self::do_sell(
+				&mut saved_balances,
+				ids.clone(),
+				Perbill::from_percent(100),
+				0u32.into(),
+			)?;
+
+			let balances = Self::do_buy(total, ids, new_rates)?;
+			PortTotalBalances::<T>::put(balances);
+			Ok(())
+		}
+	}
+
+	impl<T: Config> Pallet<T> {
+		#[transactional]
+		pub fn do_buy(
+			amount: T::Balance,
+			ids: Vec<T::AssetId>,
+			rates: Vec<Perbill>,
+		) -> sp_std::result::Result<Vec<T::Balance>, DispatchError> {
 			let mut balances = Vec::new();
 			for i in 0..ids.len() {
 				let balance = rates[i] * amount;
+				if ids[i] == 0u32.into() {
+					balances.push(balance);
+					continue
+				}
 				let best_path = {
 					let saved_path = SwapPaths::<T>::get();
 					if !saved_path.is_empty() {
@@ -231,46 +315,21 @@ pub mod pallet {
 				)?;
 				balances.push(acture_out);
 			}
-			PortUserBalances::<T>::insert(port_id, who, balances);
-			Ok(())
+
+			Ok(balances)
 		}
 
-		#[pallet::weight(10_000)]
 		#[transactional]
-		pub fn sell(
-			origin: OriginFor<T>,
-			port_id: T::AssetId,
+		pub fn do_sell(
+			saved_balances: &mut Vec<T::Balance>,
+			ids: Vec<T::AssetId>,
+			perbill_rate: Perbill,
 			dst_id: T::AssetId,
-			amount: u128,
-		) -> DispatchResult {
-			let who = ensure_signed(origin.clone())?;
-			ensure!(Components::<T>::contains_key(port_id), Error::<T>::NotHasAsset);
-
-			let ids = Components::<T>::get(port_id);
-			//let idx = ids.iter().position(|id| *id == dst_id).ok_or(Error::<T>::NotHasAsset)?;
-			let amount: T::Balance = UniqueSaturatedFrom::unique_saturated_from(amount);
-			let whole = <pallet_assets::Pallet<T> as Inspect<T::AccountId>>::balance(port_id, &who);
-			ensure!(whole >= amount, Error::<T>::NotHasEnoughAsset);
-
-			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
-				port_id,
-				&who,
-				&Self::account_id(),
-				amount,
-				false,
-			)?;
-
-			let get_balance_rate = whole / amount;
-			let get_balance_rate =
-				UniqueSaturatedInto::<u64>::unique_saturated_into(get_balance_rate);
-			let perbill_rate = Perbill::from_rational(1u64, get_balance_rate);
-
-			let mut balances = PortUserBalances::<T>::get(port_id, who.clone());
-			//let rate = Rates::<T>::get(port_id);
+		) -> sp_std::result::Result<T::Balance, DispatchError> {
 			let mut total = T::Balance::zero();
 			for i in 0..ids.len() {
-				let exchange_amount = perbill_rate * balances[i];
-				balances[i] -= exchange_amount;
+				let exchange_amount = perbill_rate * saved_balances[i];
+				saved_balances[i] -= exchange_amount;
 				if ids[i] == dst_id {
 					total += exchange_amount;
 					continue
@@ -299,15 +358,7 @@ pub mod pallet {
 					total += acture_out;
 				}
 			}
-			<pallet_assets::Pallet<T> as Transfer<T::AccountId>>::transfer(
-				dst_id,
-				&Self::account_id(),
-				&who,
-				total,
-				false,
-			)?;
-			PortUserBalances::<T>::insert(port_id, who, balances);
-			Ok(())
+			Ok(total)
 		}
 	}
 }
